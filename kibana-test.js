@@ -4,7 +4,8 @@ import axios from 'axios';
 const INTERVAL_LENGTH_MINS = 0.5;
 const REQUESTS_PER_BATCH = 10;
 const LATENCY_MAX_FACTOR = 200;
-const TEST_RPMS = [200, 500, 1000, 3000, 5000, 7500, 10000, 15000, 20000, 25000, 30000, 40000, 50000];
+const TEST_RPMS = [200, 500, 1000, 2000, 3000, 5000, 7500, 10000, 15000, 20000, 25000, 30000, 40000, 50000];
+// const TEST_RPMS = [40, 100, 200, 400, 600, 1000];
 
 const TOP_LEVEL_TIMEOUT = 'top level timeout';
 
@@ -15,7 +16,7 @@ axios.interceptors.request.use(function (config) {
     config.metadata = { startTime: new Date() }
     return config;
 }, function (error) {
-    return Promise.reject(error);
+    return Promise.reject('error');
 });
 
 axios.interceptors.response.use(function (response) {
@@ -27,7 +28,9 @@ axios.interceptors.response.use(function (response) {
         error.config.metadata.endTime = new Date();
         error.duration = error.config.metadata.endTime - error.config.metadata.startTime;
     }
-    return Promise.reject(error);
+    // return Promise.reject(error);
+    // console.log(error);
+    return Promise.resolve('error');
 });
 
 async function doLogin() {
@@ -74,6 +77,8 @@ function getRequestPromise(configObject, abortController) {
         return {
             status,
             duration,
+            size: JSON.stringify(r.data).length,
+            data: r.data,
         }
     }).catch(e => {
         // console.log(e)
@@ -97,17 +102,21 @@ async function getStatusCodesFromResponses(timingsPromises) {
         if (!statusCodes[r.status]) {
             statusCodes[r.status] = {
                 count: 0,
+                size: 0,
                 totalTime: 0,
                 avg: 0,
+                avgSize: 0,
             }
         }
 
         statusCodes[r.status].count++;
+        statusCodes[r.status].size += r.size;
         statusCodes[r.status].totalTime += r.duration;
     });
 
     Object.keys(statusCodes).forEach(key => {
         statusCodes[key].avg = statusCodes[key].totalTime / statusCodes[key].count
+        statusCodes[key].avgSize = statusCodes[key].size / statusCodes[key].count
     });
 
     return statusCodes;
@@ -188,6 +197,7 @@ function showTable(benchmarks) {
                 'total time': b.totalTime,
                 'total runs': b.count,
                 'avg runtime': b.avg,
+                'avg size': b.avgSize,
             });
         })
     })
@@ -245,14 +255,66 @@ async function initTest(testName = 'login') {
         !errorBreak && 
         // The initial batch failed 
         benchmarks[TEST_RPMS[0]][200] !== undefined && 
-        // The last benchmark had any successful responses
-        latestBenchMark[200] && 
+        // Had errors
+        Object.keys(latestBenchMark).length === 1  && latestBenchMark['200'] !== undefined &&
         // Latency increased by LATENCY_MAX_FACTOR
         (latestBenchMark[200].avg / LATENCY_MAX_FACTOR < benchmarks[TEST_RPMS[0]][200].avg))
 
     showTable(benchmarks);
 }
 
+/**
+ * Run test
+ */
+ async function initBackgroundNoise(testName = 'login') {
+    console.log('running background noise')
+    const testData = TEST_FILES[testName];
+    if (!testData) {
+        console.error(`Unknown test ${testName}`)
+        return;
+    }
+    console.log(`Test fetching ${testData.url}`)
+    let i = 0;
+    let rpm = 2000;
+    let latestBenchMark = undefined;
+    let errorBreak = false;
+
+    // login if needed
+    if (testData.auth) {
+        let authCookie = await doLogin();
+        testData.headers = testData.headers || {};
+        testData.headers.cookie = authCookie.trim();
+    }
+
+    do {
+        try {
+            console.log(`Running test for ${rpm} rpm, interval duration is ${INTERVAL_LENGTH_MINS} mins`)
+            latestBenchMark = await runIntervalsForDuration(rpm, testData);
+            console.log(`${rpm} rpm, ${latestBenchMark[200].avg} ms`)
+            await new Promise(r => setTimeout(r, 2000));
+        } catch (e) {
+            if (e.message === TOP_LEVEL_TIMEOUT) {
+                errorBreak = true;
+                console.error(`Timeout at ${rpm}`)
+                break;
+            }
+        }
+    } while (
+        // Top level timeout
+        !errorBreak && 
+        // The last benchmark had any successful responses
+        latestBenchMark[200])
+
+}
+
+
+
+
 process.env['NODE_TLS_REJECT_UNAUTHORIZED'] = '0';
 const testName = process.argv[2];
-initTest(testName);
+const isBackgorund = process.argv[3];
+if (isBackgorund) {
+    initBackgroundNoise(testName)
+} else {
+    initTest(testName);
+}
