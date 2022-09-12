@@ -78,7 +78,7 @@ function getRequestPromise(configObject, abortController) {
             status,
             duration,
             size: JSON.stringify(r.data).length,
-            data: r.data,
+            // data: r.data,
         }
     }).catch(e => {
         // console.log(e)
